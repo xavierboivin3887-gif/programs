@@ -50,6 +50,7 @@ class WorldXLauncher:
         server_code = f'''
 import asyncio, websockets, json
 clients = {{}} 
+client_names = {{}}
 async def handler(websocket):
     player_id = None
     try:
@@ -57,13 +58,15 @@ async def handler(websocket):
             data = json.loads(message)
             player_id = data.get('id')
             clients[websocket] = player_id
+            if data.get('name'): client_names[player_id] = data.get('name')
             for client in list(clients.keys()):
                 if client != websocket: await client.send(message)
     except: pass
     finally:
         if websocket in clients:
             pid = clients.pop(websocket)
-            disconnect_msg = json.dumps({{"type": "disconnect", "id": pid}})
+            name = client_names.pop(pid, "User")
+            disconnect_msg = json.dumps({{"type": "disconnect", "id": pid, "name": name}})
             for client in list(clients.keys()):
                 try: await client.send(disconnect_msg)
                 except: pass
@@ -95,8 +98,22 @@ player = FirstPersonController(speed=12)
 other_players = {{}}
 ws = None
 
-# UI Elements
 chat_input = InputField(max_lines=1, y=-.45, enabled=False)
+chat_log = Text(text="", position=window.top_left + Vec2(0.02, -0.02), scale=0.8, background=False, color=color.white)
+messages = []
+
+def add_to_log(sender, text):
+    global messages
+    if len(messages) >= 10:
+        messages = []
+        messages.append("SYSTEM: Chat log has been cleared.")
+    
+    if sender == "SYSTEM":
+        messages.append(f"SYSTEM: {{text}}")
+    else:
+        messages.append(f"{{sender}}: {{text}}")
+        
+    chat_log.text = "\\n".join(messages)
 
 def show_bubble(entity, message):
     b = Text(text=message, parent=entity, y=2.5, scale=12, billboard=True, background=True)
@@ -106,29 +123,29 @@ def on_message(ws_conn, msg):
     try:
         data = json.loads(msg)
         p_id = data.get('id')
+        p_name = data.get('name', 'User')
         if p_id == my_id: return
         
         if data.get('type') == 'disconnect':
             if p_id in other_players:
                 destroy(other_players[p_id])
                 del other_players[p_id]
+                add_to_log("SYSTEM", f"{{p_name}} disconnected.")
             return
 
         if p_id not in other_players:
+            # NEW PLAYER JOINED
             other_players[p_id] = Entity(model='cube', color=color.orange, scale=(1,2,1))
             other_players[p_id].name_tag = Text(
-                text=data.get('name', 'Player'), 
-                parent=other_players[p_id], 
-                y=1.2, 
-                scale=10, 
-                billboard=True, 
-                color=color.yellow
+                text=p_name, parent=other_players[p_id], y=1.2, scale=10, billboard=True, color=color.yellow
             )
+            add_to_log("SYSTEM", f"{{p_name}} joined the world.")
         
         if data['type'] == 'pos':
             other_players[p_id].position = Vec3(*data['pos'])
         elif data['type'] == 'chat':
             show_bubble(other_players[p_id], data['text'])
+            add_to_log(p_name, data['text'])
     except: pass
 
 def network_loop():
@@ -143,7 +160,7 @@ threading.Thread(target=network_loop, daemon=True).start()
 def cleanup():
     if ws and ws.sock and ws.sock.connected:
         try:
-            ws.send(json.dumps({{"type": "disconnect", "id": my_id}}))
+            ws.send(json.dumps({{"type": "disconnect", "id": my_id, "name": my_name}}))
             ws.close()
         except: pass
 
@@ -151,34 +168,27 @@ atexit.register(cleanup)
 window.on_close = cleanup
 
 def input(key):
-    # Press 'C' to open chat
     if key == 'c':
         chat_input.enabled = not chat_input.enabled
         chat_input.active = chat_input.enabled
         player.enabled = not chat_input.enabled
         mouse.locked = not chat_input.enabled
-    
-    # Press Enter to send
     elif key == 'enter' and chat_input.enabled:
         if chat_input.text.strip():
             msg = {{"type": "chat", "id": my_id, "name": my_name, "text": chat_input.text}}
-            if ws and ws.sock and ws.sock.connected: 
-                ws.send(json.dumps(msg))
+            if ws and ws.sock and ws.sock.connected: ws.send(json.dumps(msg))
             show_bubble(player, chat_input.text)
-        
+            add_to_log("Me", chat_input.text)
         chat_input.text = ""
         chat_input.enabled = False
         player.enabled = True
         mouse.locked = True
-    
     elif key == 'escape':
-        cleanup()
-        application.quit()
+        cleanup(); application.quit()
 
 def update():
     if ws and ws.sock and ws.sock.connected:
-        try: 
-            ws.send(json.dumps({{"type": "pos", "id": my_id, "name": my_name, "pos": [player.x, player.y, player.z]}}))
+        try: ws.send(json.dumps({{"type": "pos", "id": my_id, "name": my_name, "pos": [player.x, player.y, player.z]}}))
         except: pass
 
 app.run()
